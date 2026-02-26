@@ -28,22 +28,28 @@ class GenAITextEmbeddingClient():
     ):
         self.client = genai.Client(api_key=api_key)
         self.model_name = model_name
-        self.content_type = content_type # content/task type to specialized embeddings
+        self.default_task_type = content_type # content/task type to specialized embeddings
         self.embedding_size = embedding_size
 
-    def embed_text(self, contents: list[str]) -> Optional[list[list[float]]]:
+    def embed_text(self, contents: list[str], task_type: Optional[str] = None) -> Optional[list[list[float]]]:
         """
         Simple helper to embed a list of text strings using gemini client.
+        - Uses custom task_type for embedding style if provided, otherwise default is used
         """
+        # ensures that task type is valid
+        resolved_task_type = task_type if task_type in VALID_GEMINI_TASK_TYPES else self.default_task_type
+
         result = self.client.models.embed_content(
             model=self.model_name,
             contents=contents,
-            # NOTE: content type changes the embedding vectors as well
-            config=types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT")
+            # sets custom embedding size/dim and content type of output
+            config=types.EmbedContentConfig(task_type=resolved_task_type, output_dimensionality=self.embedding_size)
         )
 
         if result and result.embeddings:
             print(f"Embedding successful!")
             return [e.values for e in result.embeddings if e.values is not None]
         
+        # otherwise, log error
+        print(f"Embedding failed, result {result}, embeddings {result.embeddings}")
         return None
