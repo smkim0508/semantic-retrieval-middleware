@@ -9,7 +9,6 @@ Necessary components:
     - w.r.t: cross encoder
 
 TODO:
-- semantic cache + exact query cache (both in local, within MemoryInterface)
 - making this a fastAPI service for easier testing and lifespans
 - time logger
 - redis cache for persistance
@@ -18,6 +17,7 @@ TODO:
 PROGRESS:
 1. Baseline pre-reqs + embedding clients, ORMs - using scripts to test them in isolation
 2. Memory interface to hold local state caches, but still using scripts
+- optimizations via LRU and deque (max cache size)
 -- TO BE DONE: 
 3. Turning this into a minimal fastAPI service for easier testing across session, easier debugging
 - also implementing time logging to verify the effectiveness of cache
