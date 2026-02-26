@@ -35,6 +35,7 @@ def delete_all_tables(engine):
                 print(f"SUCCESS: Dropped {table_name}")
             except Exception as e2:
                 print(f"WARNING: Error dropping {table_name}: {e2}")
+    print("Tables deleted successfully!")
 
 # helper to delete a single table
 def delete_table(table_name, engine):
@@ -54,13 +55,13 @@ if __name__ == "__main__":
     # one-off script to delete tables
     load_dotenv()
     MAIN_DB_USER = os.getenv("MAIN_DB_USER")
-    MAIN_DB_PASSWORD = os.getenv("MAIN_DB_PASSWORD")
+    MAIN_DB_PW = os.getenv("MAIN_DB_PW")
     MAIN_DB_HOST = os.getenv("MAIN_DB_HOST")
     MAIN_DB_PORT = os.getenv("MAIN_DB_PORT")
     MAIN_DB_NAME = os.getenv("MAIN_DB_NAME")
 
-    # MAIN_DB_URL = f"postgresql+psycopg2://{MAIN_DB_USER}:{MAIN_DB_PASSWORD}@{MAIN_DB_HOST}:{MAIN_DB_PORT}/{MAIN_DB_NAME}"
-    MAIN_DB_URL = f"postgresql+psycopg2://{MAIN_DB_USER}:{MAIN_DB_PASSWORD}@{MAIN_DB_HOST}:{MAIN_DB_PORT}/{MAIN_DB_NAME}?sslmode=require"
+    # MAIN_DB_URL = f"postgresql+psycopg2://{MAIN_DB_USER}:{MAIN_DB_PW}@{MAIN_DB_HOST}:{MAIN_DB_PORT}/{MAIN_DB_NAME}"
+    MAIN_DB_URL = f"postgresql+psycopg2://{MAIN_DB_USER}:{MAIN_DB_PW}@{MAIN_DB_HOST}:{MAIN_DB_PORT}/{MAIN_DB_NAME}?sslmode=require"
 
     assert MAIN_DB_URL, "MAIN_DB_URL is not set"
 
