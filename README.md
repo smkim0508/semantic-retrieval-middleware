@@ -9,7 +9,6 @@ Necessary components:
     - w.r.t: cross encoder
 
 TODO:
-- memory retrieval methods
-- cache
+- semantic cache + exact query cache
 - time logger
 - reranker + CE client
