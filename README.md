@@ -35,3 +35,11 @@ PROGRESS:
 - also implementing time logging to verify the effectiveness of cache
 4. Utilizing redis to keep persistant cache across session, can reset via test routes
 5. Implementing reranker w/ CE model
+
+## Real-scenario memory latency testing concerns:
+- Can mock embed a bunch of random floats and load db with ~1-100M vectors
+- The issue is free tiers for supabase / milvus doesn't support this...
+    - Also unlike real enterprise solutions, my free tiers have data centers defaulted to EU or other far locations, so a lot of network overhead anyways
+- Can verify with like ~10k vectors on supabase
+- Growth in query latency is ~O(logn), so increasing index size isn't too big of a deal for query latency. Network latency costs more often.
+- Verify PoC using just the baseline vs cache design
