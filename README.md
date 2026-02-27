@@ -1,6 +1,18 @@
 # semantic-retrieval-middleware
 Fast, latency-aware vector DB retrieval middleware with semantic caching and integrated re-ranker.
 
+## How to Run Retrieval Service (Locally) - WIP
+
+1. Install dependencies with: `pip install -r requirements.txt`
+
+2. Set up your `.env` file at the project root. Check `.env.example` for required environmental variables.
+
+3. Run the retrieval service with uvicorn: `uvicorn main:app --reload`
+
+The API docs will be available at `http://localhost:8000/docs`. Use this to debug / run tests on the retrieval service.
+- Also use logger to nicely print statements w/ timestamps and file locations.
+
+## Project Notes / Planning
 Necessary components:
 0) pre-reqs: methods to embed sample text, define vector DB index/table schema
 1) memory retrieval interface, connected to pgvector (Milvus/Pinecone TBD)
