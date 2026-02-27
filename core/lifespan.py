@@ -6,10 +6,6 @@ from db.session import create_db_engine_context, parse_db_settings_from_service,
 from models.embeddings.gemini_embedding_client import GenAITextEmbeddingClient
 from memory_interface import MemoryInterface
 
-# TODO: build async db session maker
-# then init db engine instance + llm client in lifespan
-# then make dependencies
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -22,7 +18,7 @@ async def lifespan(app: FastAPI):
     - Use stack.push_async_context to register the clean up method only
     """
     # default start up message
-    logger.info(f"Starting Portable-Brain service!")
+    logger.info(f"Starting semantic retrieval middleware!")
 
     # initialize resources during start up
     logger.info("Initializing service resources...")
