@@ -17,7 +17,7 @@ from core.dependencies import (
 from core.logging_middleware import LoggingMiddleware
 
 # API / routes
-# TODO
+from api.test_routes import router as test_router
 
 # allow docs for testing
 docs_config: dict[str, Any] = {
@@ -48,7 +48,7 @@ app.add_middleware(
 app.add_middleware(LoggingMiddleware)
 
 # test routes
-# TODO
+app.include_router(test_router)
 
 # test endpoint
 @app.get("/", tags=["Application"])
