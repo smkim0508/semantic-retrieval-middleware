@@ -4,8 +4,9 @@ from pathlib import Path
 import os
 
 from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
-from db.crud import store_vector
+from db.model import VectorDB
 from models.embeddings.gemini_embedding_client import GenAITextEmbeddingClient
 
 # load env + construct db connection url
@@ -32,10 +33,15 @@ if __name__ == "__main__":
 
     if not embeddings:
         print("Embedding failed, no result returned.")
-        exit(1) # exit prematurely if embedding fails
+        exit(1)
 
-    vector = embeddings[0] # we only gave one text in the list to embed
+    vector = embeddings[0]
     print(f"Embedded vector length: {len(vector)}")
 
-    row = store_vector(vector=vector, text=sample_text, engine=engine)
-    print(f"Stored row {row.id} successfully.")
+    obj = VectorDB(vector=vector, text=sample_text)
+    with sessionmaker(engine)() as session:
+        session.add(obj)
+        session.commit()
+        session.refresh(obj)
+
+    print(f"Stored row {obj.id} successfully.")
