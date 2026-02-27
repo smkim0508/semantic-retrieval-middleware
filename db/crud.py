@@ -1,34 +1,29 @@
 # CRUD operations on the vector db
 from db.model import VectorDB
+from db.session import get_async_session_maker
 
-# using sync session for testing now, async TBD
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.orm import Session
-from sqlalchemy.engine import Engine
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncEngine
 
-engine = create_engine("postgresql+psycopg2://user:pass@localhost/db")
-
-def find_similar(query_vector: list[float], engine: Engine, limit: int = 5) -> list[str]:
+async def find_similar(query_vector: list[float], engine: AsyncEngine, limit: int = 5) -> list[str]:
     """
     Returns the text of the top-k most similar vectors to query_vector, ranked by cosine similarity.
     """
-    with sessionmaker(engine)() as session:
-        rows = (
-            session.query(VectorDB.text)
+    async with get_async_session_maker(engine)() as session:
+        result = await session.execute(
+            select(VectorDB.text)
             .order_by(VectorDB.vector.cosine_distance(query_vector))
             .limit(limit)
-            .all()
         )
-    return [row.text for row in rows]
+    return [row.text for row in result.all()]
 
-def store_vector(vector: list[float], text: str, engine: Engine) -> VectorDB:
+async def store_vector(vector: list[float], text: str, engine: AsyncEngine) -> VectorDB:
     """
-    Takes a text string and its vector embedding and stores it in the vector db
+    Takes a text string and its vector embedding and stores it in the vector db.
     """
     obj = VectorDB(vector=vector, text=text)
-    with sessionmaker(engine)() as session:
+    async with get_async_session_maker(engine)() as session:
         session.add(obj)
-        session.commit()
-        session.refresh(obj)
+        await session.commit()
+        await session.refresh(obj)
     return obj

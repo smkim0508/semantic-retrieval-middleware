@@ -1,7 +1,7 @@
 # the main memory retrieval interface
 import numpy as np
 from collections import deque, OrderedDict
-from sqlalchemy.engine import Engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 from models.embeddings.gemini_embedding_client import GenAITextEmbeddingClient
 from db.crud import find_similar
 from typing import Optional
@@ -14,7 +14,7 @@ class MemoryInterface:
     2. Semantic cache — skips db retrieval if a sufficiently similar query was seen before (FIFO deque, max 10)
     """
 
-    def __init__(self, embedding_client: GenAITextEmbeddingClient, main_db_engine: Engine):
+    def __init__(self, embedding_client: GenAITextEmbeddingClient, main_db_engine: AsyncEngine):
         self.embedding_client = embedding_client
         self.main_db_engine = main_db_engine
         self._exact_cache: OrderedDict[str, list[str]] = OrderedDict()
@@ -50,7 +50,7 @@ class MemoryInterface:
                 return cached_results
         return None
 
-    def retrieve(self, query: str, limit: int = 5) -> list[str]:
+    async def retrieve(self, query: str, limit: int = 5) -> list[str]:
         """
         Embeds the natural language query and returns the top-k most similar texts from the db.
         NOTE: task_type is set to RETRIEVAL_QUERY since gemini embeddings prefer diff content types for diff tasks.
@@ -80,7 +80,7 @@ class MemoryInterface:
             return semantic_cache_result
 
         # 3) cache miss — retrieve from db and populate both caches
-        results = find_similar(query_vector=query_vector, engine=self.main_db_engine, limit=limit)
+        results = await find_similar(query_vector=query_vector, engine=self.main_db_engine, limit=limit)
         self._set_exact_cache(query, results)
         self._semantic_cache.append((query_vector, results))
         return results
