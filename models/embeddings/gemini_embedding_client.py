@@ -53,3 +53,27 @@ class GenAITextEmbeddingClient():
         # otherwise, log error
         print(f"Embedding failed, result {result}, embeddings {result.embeddings}")
         return None
+
+    async def aembed_text(self, contents: list[str], task_type: Optional[str] = None) -> Optional[list[list[float]]]:
+        """
+        Async version of the embed_text() method.
+        - Converts a list of text strings into a list of embedding vectors w/ custom task type.
+        - uses client.aio.models instead of client.models
+        """
+        resolved_task_type = task_type if task_type in VALID_GEMINI_TASK_TYPES else self.default_task_type
+
+        # uses async model
+        result = await self.client.aio.models.embed_content(
+            model=self.model_name,
+            contents=contents, # type: ignore[arg-type] # GenAI SDK accepts list[str] at runtime
+            # sets configs: task type and embedding size
+            config=types.EmbedContentConfig(task_type=resolved_task_type, output_dimensionality=self.embedding_size),
+        )
+            
+        if result and result.embeddings:
+            print(f"Embedding successful!")
+            return [e.values for e in result.embeddings if e.values is not None]
+        
+        # otherwise, log error
+        print(f"Embedding failed, result {result}, embeddings {result.embeddings}")
+        return None
