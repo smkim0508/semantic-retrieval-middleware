@@ -26,6 +26,12 @@ class MemoryInterface:
         self._cosine_similarity_threshold = 0.90 # threshold for semantic cache
         self._exact_cache_max = 50 # threshold for max number of items in exact query cache
 
+    def _make_cache_key(self, query: str, limit: int) -> str:
+        """
+        Simple helper to format the cache key for L1 and L2 caches.
+        """
+        return f"{query}::{limit}"
+
     def _set_exact_cache(self, key: str, value: list[str]) -> None:
         """
         Simple helper to insert or or update elements in LRU exact cache, evicting the oldest entry if at capacity.
@@ -39,7 +45,7 @@ class MemoryInterface:
     def _cosine_similarity(self, a: list[float], b: list[float]) -> float:
         """
         Simple helper to compute cosine similarity between two vectors using numpy.
-        NOTE: prevents zero-divisions.
+        NOTE: prevents zero-divisions; not likely in real scenarios (real embeddings), but possible when testing.
         """
         va, vb = np.array(a), np.array(b)
         norm_a, norm_b = np.linalg.norm(va), np.linalg.norm(vb)
@@ -68,18 +74,20 @@ class MemoryInterface:
           fallback: vector DB query
         NOTE: task_type is set to RETRIEVAL_QUERY since gemini embeddings prefer diff content types for diff tasks.
         """
+        cache_key = self._make_cache_key(query, limit)
+
         # 1) L1 exact match — skip embedding entirely
-        if query in self._exact_cache:
+        if cache_key in self._exact_cache:
             logger.info(f"[L1 cache] exact hit: {query}")
-            self._exact_cache.move_to_end(query)
-            return self._exact_cache[query]
+            self._exact_cache.move_to_end(cache_key)
+            return self._exact_cache[cache_key]
 
         # 2) L2 Redis exact match — persistent across restarts, still skips embedding
-        cached = await self.redis_client.get(query)
+        cached = await self.redis_client.get(cache_key)
         if cached:
             logger.info(f"[L2 cache] Redis hit: {query}")
             results = json.loads(cached)
-            self._set_exact_cache(query, results)  # promote to L1
+            self._set_exact_cache(cache_key, results)  # promote to L1
             return results
 
         # otherwise, embed the query
@@ -95,13 +103,13 @@ class MemoryInterface:
         if semantic_cache_result:
             logger.info(f"[L3 cache] semantic hit: {query}")
             # promote to both exact caches so future identical queries skip embedding
-            self._set_exact_cache(query, semantic_cache_result)
-            await self.redis_client.set(query, json.dumps(semantic_cache_result))
+            self._set_exact_cache(cache_key, semantic_cache_result)
+            await self.redis_client.set(cache_key, json.dumps(semantic_cache_result))
             return semantic_cache_result
 
         # 4) cache miss — retrieve from db and populate all caches
         results = await find_similar(query_vector=query_vector, engine=self.main_db_engine, limit=limit)
-        self._set_exact_cache(query, results)
+        self._set_exact_cache(cache_key, results)
         self._semantic_cache.append((query_vector, results))
-        await self.redis_client.set(query, json.dumps(results))
+        await self.redis_client.set(cache_key, json.dumps(results))
         return results

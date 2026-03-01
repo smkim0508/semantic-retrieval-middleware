@@ -30,11 +30,13 @@ PROGRESS:
 1. Baseline pre-reqs + embedding clients, ORMs - using scripts to test them in isolation
 2. Memory interface to hold local state caches, but still using scripts
 - optimizations via LRU and deque (max cache size)
--- TO BE DONE: 
 3. Turning this into a minimal fastAPI service for easier testing across session, easier debugging
 - also implementing time logging to verify the effectiveness of cache
+
+-- TO BE DONE
 4. Utilizing redis to keep persistant cache across session, can reset via test routes
 5. Implementing reranker w/ CE model
+6. Rache cache client, TBD
 
 ## Real-scenario memory latency testing concerns:
 - Can mock embed a bunch of random floats and load db with ~1-100M vectors
@@ -43,3 +45,6 @@ PROGRESS:
 - Can verify with like ~10k vectors on supabase
 - Growth in query latency is ~O(logn), so increasing index size isn't too big of a deal for query latency. Network latency costs more often.
 - Verify PoC using just the baseline vs cache design
+
+TBD:
+- Real-scenario latency reduction can be achieved further via eager async calls.
