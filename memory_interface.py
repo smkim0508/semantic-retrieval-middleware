@@ -70,7 +70,7 @@ class MemoryInterface:
         return None
 
     # main retrieval methods
-    async def retrieve(self, query: str, limit: int = 5) -> list[str]:
+    async def retrieve(self, query: str, limit: int = 5, rerank: bool = True) -> list[str]:
         """
         Embeds the natural language query and returns the top-k most similar texts from the db.
         Cache hierarchy:
@@ -80,7 +80,7 @@ class MemoryInterface:
             fallback: vector DB query
             NOTE: caches hold reranked results.
 
-        This retrieval method also reranks the results using a cross-encoder reranker before returning.
+        This retrieval method also (optionally) reranks the results using a cross-encoder reranker before returning.
         - NOTE: one caveat, initial retrieval only fetches top k requested results (limit) and reranks.
         - This is not necessarily the top k most similar texts post-reranking from the entire DB.
 
@@ -115,20 +115,22 @@ class MemoryInterface:
         if semantic_cache_result:
             logger.info(f"[L3 cache] semantic hit: {query}")
             # NOTE: for semantic cache only, we re-rank again on the exact query, since cached results are reranked on a different query.
-            semantic_cache_result = self._rerank(query, semantic_cache_result)
+            semantic_cache_result = self._rerank(query, semantic_cache_result) if rerank else semantic_cache_result
             # promote to both exact caches so future identical queries skip embedding
             self._set_exact_cache(cache_key, semantic_cache_result)
             await self.redis_client.set(cache_key, json.dumps(semantic_cache_result))
             return semantic_cache_result
 
         # 4) cache miss — retrieve from db and populate all caches
+        logger.info(f"no cache hit, retrieving from db: {query}")
         results = await find_similar(query_vector=query_vector, engine=self.main_db_engine, limit=limit)
         # rerank results via cross-encoder and save them to caches
-        reranked_results = self._rerank(query, results)
-        self._set_exact_cache(cache_key, reranked_results)
-        self._semantic_cache.append((query_vector, reranked_results))
-        await self.redis_client.set(cache_key, json.dumps(reranked_results))
-        return reranked_results
+        results = self._rerank(query, results) if rerank else results
+        logger.info(f"saving retrieved results to cache for {query}")
+        self._set_exact_cache(cache_key, results)
+        self._semantic_cache.append((query_vector, results))
+        await self.redis_client.set(cache_key, json.dumps(results))
+        return results
     
     # helper methods for reranking
     def _rerank(self, query, docs) -> list[str]:
