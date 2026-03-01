@@ -1,2 +1,2 @@
 # cross-encoder reranker
-# TODO: to be implemented
+# TODO: can be expanded to more rerankers or clients
