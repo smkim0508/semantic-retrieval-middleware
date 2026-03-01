@@ -1,11 +1,13 @@
 # test routes
+import json
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import text
+import redis.asyncio as aioredis
 
 from common.logger import logger
 from common.timer import async_timer
-from core.dependencies import get_main_db_engine, get_gemini_text_embedding_client, get_memory_retriever
+from core.dependencies import get_main_db_engine, get_gemini_text_embedding_client, get_memory_retriever, get_redis_client
 from db.crud import store_vector
 from db.session import get_async_session_maker
 from memory_interface import MemoryInterface
@@ -63,3 +65,41 @@ async def test_embed_and_store(
         "stored_id": row.id,
         "vector_length": len(vector),
     }
+
+@router.get("/redis-cache")
+async def get_redis_cache(
+    redis_client: aioredis.Redis = Depends(get_redis_client),
+):
+    """
+    Returns all key-value pairs currently stored in Redis.
+    """
+    keys = await redis_client.keys("*")
+    if not keys:
+        return {"count": 0, "entries": {}}
+
+    values = await redis_client.mget(*keys)
+    entries = {
+        key: json.loads(value) if value else None
+        for key, value in zip(keys, values)
+    }
+    logger.info(f"Returning {len(entries)} cached entries")
+    return {"count": len(entries), "entries": entries}
+
+@router.post("/clear-cache")
+async def clear_cache(
+    redis_client: aioredis.Redis = Depends(get_redis_client),
+    memory: MemoryInterface = Depends(get_memory_retriever),
+):
+    """
+    Clears all cache layers:
+    - 1) in-memory exact cache (L1)
+    - 2) Redis exact cache (L2) 
+    - 3) semantic cache (L3) 
+    """
+    await redis_client.flushdb()
+    memory._exact_cache.clear()
+    memory._semantic_cache.clear()
+    logger.info("All cache layers cleared")
+    return {"message": "All cache layers cleared"}
+
+# TODO: make redis cache client wrapper to save/load easily
