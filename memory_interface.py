@@ -17,15 +17,16 @@ class MemoryInterface:
     1. Exact match cache - skips embedding client entirely on identical query texts (LRU via OrderedDict, max 50)
     2. Semantic cache — skips db retrieval if a sufficiently similar query was seen before (FIFO deque, max 10)
 
-    TODO:
-    - bug 1) limit not checked in semantic cache
-    - bug 2) retrieval size needs to be implemented
-        - update cache_key
-        - also add retrieval_size to semantic cache
-    - bug 3) rerank and non-rerank retrieval cache needs to be implemented
-    - bug/consideration 4) semantic cache matches on the earliest first text over threshold, not the best one
+    NOTE:
+    - semantic cache deque stores (vector, results, reranked_bool) tuples
+        - reranked_bool prevents cross-contamination between plain and reranked entries
+        - len(results) encodes the candidate pool size (retrieval_size for reranked, limit for plain)
+    - L1/L2 cache keys include retrieval_size for retrieve_and_rerank to isolate from retrieve_plain
 
-    If we fixed limit or retrieval size then it becomes much easier to manage cache
+    if retrieval_size and limit was fixed, this would be easier
+    
+    more bugs:
+    1) L1/L2 caches are not upward compatible
     """
 
     def __init__(self, embedding_client: GenAITextEmbeddingClient, main_db_engine: AsyncEngine, redis_client: aioredis.Redis, cross_encoder_reranker: CEReranker):
@@ -36,15 +37,18 @@ class MemoryInterface:
         self.cross_encoder_reranker = cross_encoder_reranker
         # caches and cache settings
         self._exact_cache: OrderedDict[str, list[str]] = OrderedDict()  # L1: in-memory LRU
-        self._semantic_cache: deque[tuple[list[float], list[str]]] = deque(maxlen=10) # query_vector, results tuple
+        self._semantic_cache: deque[tuple[list[float], list[str], bool]] = deque(maxlen=10) # (query_vector, results, reranked_bool)
         self._cosine_similarity_threshold = 0.90 # threshold for semantic cache
         self._exact_cache_max = 50 # threshold for max number of items in exact query cache
     
     # utils for caches below
-    def _make_cache_key(self, query: str, limit: int) -> str:
+    def _make_cache_key(self, query: str, limit: int, retrieval_size: Optional[int] = None) -> str:
         """
         Simple helper to format the cache key for L1 and L2 caches.
+        retrieval_size is included for retrieve_and_rerank to avoid collisions with retrieve_plain keys.
         """
+        if retrieval_size is not None:
+            return f"{query}::{limit}::{retrieval_size}"
         return f"{query}::{limit}"
 
     def _set_exact_cache(self, key: str, value: list[str]) -> None:
@@ -68,16 +72,28 @@ class MemoryInterface:
             return 0.0
         return float(np.dot(va, vb) / (norm_a * norm_b))
 
-    def _find_semantic_cache_hit(self, query_vector: list[float]) -> Optional[list[str]]:
+    def _find_semantic_cache_hit(self, query_vector: list[float], rerank: bool, size_needed: int) -> Optional[list[str]]:
         """
         Simple helper to loop through semantic cache to find query hit via cos. sim. threshold.
-        - If cache hit, returns just the cached similar text results
-        - returns None if no semantic cache hit
+        - rerank: must match the cached entry's reranked_bool to prevent cross-contamination
+        - size_needed: len(cached_results) must be >= size_needed to ensure sufficient candidate pool
+            - for retrieve_and_rerank: size_needed = retrieval_size
+            - for retrieve_plain / retrieve: size_needed = limit
+        - returns the cached results if hit, None otherwise
+        NOTE: since the max size of semantic cache is small (10), we find the best match after iterating through the entire list
         """
-        for cached_vector, cached_results in self._semantic_cache:
-            if self._cosine_similarity(query_vector, cached_vector) >= self._cosine_similarity_threshold:
-                return cached_results
-        return None
+        best_results = None
+        best_score = -1.0
+        for cached_vector, cached_results, cached_reranked in self._semantic_cache:
+            if cached_reranked != rerank:
+                continue
+            if len(cached_results) < size_needed:
+                continue
+            score = self._cosine_similarity(query_vector, cached_vector)
+            if score >= self._cosine_similarity_threshold and score > best_score:
+                best_score = score
+                best_results = cached_results
+        return best_results
 
     # main retrieval methods
     async def retrieve(self, query: str, limit: int = 5, rerank: bool = True) -> list[str]:
@@ -121,7 +137,7 @@ class MemoryInterface:
         # 3) semantic cache — skip db retrieval if similar query was seen before
         # NOTE: current helper loops through all the cached vectors, but it is possible to implement this via numpy matrix multiplication to one-shot all cosine similarities
         # - above optimization not yet implemented since cache size is negligibly small (most case) and may be beneficial if recent cache computed first and returns
-        semantic_cache_result = self._find_semantic_cache_hit(query_vector)
+        semantic_cache_result = self._find_semantic_cache_hit(query_vector, rerank=rerank, size_needed=limit)
         if semantic_cache_result:
             logger.info(f"[L3 cache] semantic hit: {query}")
             # NOTE: for semantic cache only, we re-rank again on the exact query, since cached results are reranked on a different query.
@@ -138,7 +154,7 @@ class MemoryInterface:
         results = self._rerank(query, results) if rerank else results
         logger.info(f"saving retrieved results to cache for {query}")
         self._set_exact_cache(cache_key, results)
-        self._semantic_cache.append((query_vector, results))
+        self._semantic_cache.append((query_vector, results, rerank))
         await self.redis_client.set(cache_key, json.dumps(results))
         return results
     
@@ -172,18 +188,18 @@ class MemoryInterface:
         query_vector = embeddings[0]
 
         # 3) semantic cache — skip db retrieval if similar query was seen before
-        semantic_cache_result = self._find_semantic_cache_hit(query_vector)
+        semantic_cache_result = self._find_semantic_cache_hit(query_vector, rerank=False, size_needed=limit)
         if semantic_cache_result:
             logger.info(f"[L3 cache] semantic hit: {query}")
             self._set_exact_cache(cache_key, semantic_cache_result)
             await self.redis_client.set(cache_key, json.dumps(semantic_cache_result))
-            return semantic_cache_result
+            return semantic_cache_result[:limit]
 
         # 4) cache miss — retrieve from db and populate all caches
         logger.info(f"no cache hit, retrieving from db: {query}")
         results = await find_similar(query_vector=query_vector, engine=self.main_db_engine, limit=limit)
         self._set_exact_cache(cache_key, results)
-        self._semantic_cache.append((query_vector, results))
+        self._semantic_cache.append((query_vector, results, False))
         await self.redis_client.set(cache_key, json.dumps(results))
         return results
 
@@ -194,7 +210,8 @@ class MemoryInterface:
         NOTE: caches hold already-reranked results, so only L3 hits re-rank on the exact query.
         NOTE: task_type is set to RETRIEVAL_QUERY since gemini embeddings prefer diff content types for diff tasks.
         """
-        cache_key = self._make_cache_key(query, limit)
+        assert retrieval_size >= limit, f"retrieval_size ({retrieval_size}) must be >= limit ({limit})"
+        cache_key = self._make_cache_key(query, limit, retrieval_size)
 
         # 1) L1 exact match — skip embedding entirely
         if cache_key in self._exact_cache:
@@ -216,8 +233,8 @@ class MemoryInterface:
             return []
         query_vector = embeddings[0]
 
-        # 3) semantic cache — re-rank on the exact query since cached results are from a different query
-        semantic_cache_result = self._find_semantic_cache_hit(query_vector)
+        # 3) semantic cache — valid if reranked entry with enough candidates; re-rank on exact query
+        semantic_cache_result = self._find_semantic_cache_hit(query_vector, rerank=True, size_needed=retrieval_size)
         if semantic_cache_result:
             logger.info(f"[L3 cache] semantic hit: {query}")
             reranked = self._rerank(query, semantic_cache_result)
@@ -231,7 +248,7 @@ class MemoryInterface:
         reranked = self._rerank(query, results)
         # NOTE: stores all reranked results to caches.
         self._set_exact_cache(cache_key, reranked)
-        self._semantic_cache.append((query_vector, reranked))
+        self._semantic_cache.append((query_vector, reranked, True))
         await self.redis_client.set(cache_key, json.dumps(reranked))
         # returns just the top-k requested
         return reranked[:limit]
