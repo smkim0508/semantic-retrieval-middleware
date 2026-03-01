@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from models.embeddings.gemini_embedding_client import GenAITextEmbeddingClient
 from db.crud import find_similar
 from typing import Optional
+from common.logger import logger
 
 class MemoryInterface:
     """
@@ -38,9 +39,13 @@ class MemoryInterface:
     def _cosine_similarity(self, a: list[float], b: list[float]) -> float:
         """
         Simple helper to compute cosine similarity between two vectors using numpy.
+        NOTE: prevents zero-divisions.
         """
         va, vb = np.array(a), np.array(b)
-        return float(np.dot(va, vb) / (np.linalg.norm(va) * np.linalg.norm(vb)))
+        norm_a, norm_b = np.linalg.norm(va), np.linalg.norm(vb)
+        if norm_a == 0.0 or norm_b == 0.0:
+            return 0.0
+        return float(np.dot(va, vb) / (norm_a * norm_b))
 
     def _find_semantic_cache_hit(self, query_vector: list[float]) -> Optional[list[str]]:
         """
@@ -65,14 +70,14 @@ class MemoryInterface:
         """
         # 1) L1 exact match — skip embedding entirely
         if query in self._exact_cache:
-            print(f"[L1 cache] exact hit: {query}")
+            logger.info(f"[L1 cache] exact hit: {query}")
             self._exact_cache.move_to_end(query)
             return self._exact_cache[query]
 
         # 2) L2 Redis exact match — persistent across restarts, still skips embedding
         cached = await self.redis_client.get(query)
         if cached:
-            print(f"[L2 cache] Redis hit: {query}")
+            logger.info(f"[L2 cache] Redis hit: {query}")
             results = json.loads(cached)
             self._set_exact_cache(query, results)  # promote to L1
             return results
@@ -88,7 +93,7 @@ class MemoryInterface:
         # - above optimization not yet implemented since cache size is negligibly small (most case) and may be beneficial if recent cache computed first and returns
         semantic_cache_result = self._find_semantic_cache_hit(query_vector)
         if semantic_cache_result:
-            print(f"[L3 cache] semantic hit: {query}")
+            logger.info(f"[L3 cache] semantic hit: {query}")
             # promote to both exact caches so future identical queries skip embedding
             self._set_exact_cache(query, semantic_cache_result)
             await self.redis_client.set(query, json.dumps(semantic_cache_result))
