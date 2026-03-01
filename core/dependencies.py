@@ -30,3 +30,9 @@ def get_redis_client(request: Request) -> aioredis.Redis:
     FastAPI dependency to get the shared Redis client from the application state.
     """
     return request.app.state.redis_client
+
+def get_cross_encoder_reranker(request: Request) -> Any:
+    """
+    FastAPI dependency to get the shared cross encoder reranker from the application state.
+    """
+    return request.app.state.cross_encoder_reranker
