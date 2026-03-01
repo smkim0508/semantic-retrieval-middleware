@@ -1,6 +1,7 @@
 from typing import Any, Optional
 from common.logger import logger
 from fastapi import Request, Depends
+import redis.asyncio as aioredis
 from sqlalchemy.ext.asyncio import AsyncEngine
 from models.embeddings.gemini_embedding_client import GenAITextEmbeddingClient
 from memory_interface import MemoryInterface
@@ -23,3 +24,9 @@ def get_memory_retriever(request: Request) -> MemoryInterface:
     FastAPI dependency to get the shared MemoryInterface instance from the application state.
     """
     return request.app.state.memory_retriever
+
+def get_redis_client(request: Request) -> aioredis.Redis:
+    """
+    FastAPI dependency to get the shared Redis client from the application state.
+    """
+    return request.app.state.redis_client

@@ -35,6 +35,9 @@ class ServiceSettings(BaseSettings):
     # gemini
     GEMINI_API_KEY: str
 
+    # redis
+    REDIS_URL: str = Field(default="redis://localhost:6379")
+
 # lru cache to return service setting instance
 @lru_cache()
 def get_service_settings() -> ServiceSettings:

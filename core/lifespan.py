@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager, AsyncExitStack
 from fastapi import FastAPI
+import redis.asyncio as aioredis
 from core.config import get_service_settings
 from common.logger import logger
 from db.session import create_db_engine_context, parse_db_settings_from_service, DBSettings, DBType
@@ -43,10 +44,17 @@ async def lifespan(app: FastAPI):
         app.state.gemini_text_embedding_client = gemini_text_embedding_client
         logger.info(f"Text embedding client (GOOGLE GENAI) initialized.")
 
+        # Redis client for persistent cache
+        redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        app.state.redis_client = redis_client
+        stack.push_async_callback(redis_client.aclose)
+        logger.info(f"Redis client initialized at {settings.REDIS_URL}.")
+
         # Memory retriever interface
         memory_retriever = MemoryInterface(
             main_db_engine=app.state.main_db_engine,
-            embedding_client=gemini_text_embedding_client
+            embedding_client=gemini_text_embedding_client,
+            redis_client=redis_client,
         )
         app.state.memory_retriever = memory_retriever
         logger.info(f"Memory retriever initialized.")
