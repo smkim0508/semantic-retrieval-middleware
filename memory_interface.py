@@ -16,6 +16,16 @@ class MemoryInterface:
     Caches:
     1. Exact match cache - skips embedding client entirely on identical query texts (LRU via OrderedDict, max 50)
     2. Semantic cache — skips db retrieval if a sufficiently similar query was seen before (FIFO deque, max 10)
+
+    TODO:
+    - bug 1) limit not checked in semantic cache
+    - bug 2) retrieval size needs to be implemented
+        - update cache_key
+        - also add retrieval_size to semantic cache
+    - bug 3) rerank and non-rerank retrieval cache needs to be implemented
+    - bug/consideration 4) semantic cache matches on the earliest first text over threshold, not the best one
+
+    If we fixed limit or retrieval size then it becomes much easier to manage cache
     """
 
     def __init__(self, embedding_client: GenAITextEmbeddingClient, main_db_engine: AsyncEngine, redis_client: aioredis.Redis, cross_encoder_reranker: CEReranker):
@@ -132,6 +142,100 @@ class MemoryInterface:
         await self.redis_client.set(cache_key, json.dumps(results))
         return results
     
+    # two separate retrieval methods for rerank vs not
+    async def retrieve_plain(self, query: str, limit: int = 5) -> list[str]:
+        """
+        Baseline retrieval without reranking. Returns top-k results from the vector DB.
+        Uses the full 3-tier cache (L1 -> L2 -> L3 -> DB).
+        NOTE: task_type is set to RETRIEVAL_QUERY since gemini embeddings prefer diff content types for diff tasks.
+        """
+        cache_key = self._make_cache_key(query, limit)
+
+        # 1) L1 exact match — skip embedding entirely
+        if cache_key in self._exact_cache:
+            logger.info(f"[L1 cache] exact hit: {query}")
+            self._exact_cache.move_to_end(cache_key)
+            return self._exact_cache[cache_key]
+
+        # 2) L2 Redis exact match — persistent across restarts, still skips embedding
+        cached = await self.redis_client.get(cache_key)
+        if cached:
+            logger.info(f"[L2 cache] Redis hit: {query}")
+            results = json.loads(cached)
+            self._set_exact_cache(cache_key, results)
+            return results
+
+        # otherwise, embed the query
+        embeddings = self.embedding_client.embed_text([query], task_type="RETRIEVAL_QUERY")
+        if not embeddings:
+            return []
+        query_vector = embeddings[0]
+
+        # 3) semantic cache — skip db retrieval if similar query was seen before
+        semantic_cache_result = self._find_semantic_cache_hit(query_vector)
+        if semantic_cache_result:
+            logger.info(f"[L3 cache] semantic hit: {query}")
+            self._set_exact_cache(cache_key, semantic_cache_result)
+            await self.redis_client.set(cache_key, json.dumps(semantic_cache_result))
+            return semantic_cache_result
+
+        # 4) cache miss — retrieve from db and populate all caches
+        logger.info(f"no cache hit, retrieving from db: {query}")
+        results = await find_similar(query_vector=query_vector, engine=self.main_db_engine, limit=limit)
+        self._set_exact_cache(cache_key, results)
+        self._semantic_cache.append((query_vector, results))
+        await self.redis_client.set(cache_key, json.dumps(results))
+        return results
+
+    async def retrieve_and_rerank(self, query: str, limit: int = 5, retrieval_size: int = 50) -> list[str]:
+        """
+        Retrieval with cross-encoder reranking. Returns top-k results reranked by CE score.
+        Uses the full 3-tier cache.
+        NOTE: caches hold already-reranked results, so only L3 hits re-rank on the exact query.
+        NOTE: task_type is set to RETRIEVAL_QUERY since gemini embeddings prefer diff content types for diff tasks.
+        """
+        cache_key = self._make_cache_key(query, limit)
+
+        # 1) L1 exact match — skip embedding entirely
+        if cache_key in self._exact_cache:
+            logger.info(f"[L1 cache] exact hit: {query}")
+            self._exact_cache.move_to_end(cache_key)
+            return self._exact_cache[cache_key][:limit]
+
+        # 2) L2 Redis exact match — persistent across restarts, still skips embedding
+        cached = await self.redis_client.get(cache_key)
+        if cached:
+            logger.info(f"[L2 cache] Redis hit: {query}")
+            results = json.loads(cached)
+            self._set_exact_cache(cache_key, results)
+            return results[:limit]
+
+        # otherwise, embed the query
+        embeddings = self.embedding_client.embed_text([query], task_type="RETRIEVAL_QUERY")
+        if not embeddings:
+            return []
+        query_vector = embeddings[0]
+
+        # 3) semantic cache — re-rank on the exact query since cached results are from a different query
+        semantic_cache_result = self._find_semantic_cache_hit(query_vector)
+        if semantic_cache_result:
+            logger.info(f"[L3 cache] semantic hit: {query}")
+            reranked = self._rerank(query, semantic_cache_result)
+            self._set_exact_cache(cache_key, reranked)
+            await self.redis_client.set(cache_key, json.dumps(reranked))
+            return reranked[:limit]
+
+        # 4) cache miss — retrieve from db, rerank, populate all caches
+        logger.info(f"no cache hit, retrieving from db: {query}")
+        results = await find_similar(query_vector=query_vector, engine=self.main_db_engine, limit=retrieval_size)
+        reranked = self._rerank(query, results)
+        # NOTE: stores all reranked results to caches.
+        self._set_exact_cache(cache_key, reranked)
+        self._semantic_cache.append((query_vector, reranked))
+        await self.redis_client.set(cache_key, json.dumps(reranked))
+        # returns just the top-k requested
+        return reranked[:limit]
+
     # helper methods for reranking
     def _rerank(self, query, docs) -> list[str]:
         """
