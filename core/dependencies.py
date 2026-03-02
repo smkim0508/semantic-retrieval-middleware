@@ -5,6 +5,7 @@ import redis.asyncio as aioredis
 from sqlalchemy.ext.asyncio import AsyncEngine
 from models.embeddings.gemini_embedding_client import GenAITextEmbeddingClient
 from memory_interface import MemoryInterface
+from memory_interface_extended import ExtendedMemoryInterface
 
 # conveniently return any app lifetime dependencies to be used in routes
 def get_main_db_engine(request: Request) -> AsyncEngine:
@@ -36,3 +37,10 @@ def get_cross_encoder_reranker(request: Request) -> Any:
     FastAPI dependency to get the shared cross encoder reranker from the application state.
     """
     return request.app.state.cross_encoder_reranker
+
+def get_extended_memory_retriever(request: Request) -> ExtendedMemoryInterface:
+    """
+    FastAPI dependency to get the shared ExtendedMemoryInterface instance from the application state.
+    Use this for endpoints that interact with the warm-buffer write path or ground-truth validation.
+    """
+    return request.app.state.extended_memory_retriever

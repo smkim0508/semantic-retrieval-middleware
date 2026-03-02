@@ -7,6 +7,10 @@ from db.session import create_db_engine_context, parse_db_settings_from_service,
 from models.embeddings.gemini_embedding_client import GenAITextEmbeddingClient
 from models.reranker.cross_encoder import CEReranker
 from memory_interface import MemoryInterface
+from memory_interface_extended import ExtendedMemoryInterface
+
+# Warm-buffer periodic flush interval in seconds
+_WARM_BUFFER_FLUSH_INTERVAL_SECONDS = 300 # 5 min
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -67,6 +71,20 @@ async def lifespan(app: FastAPI):
         app.state.memory_retriever = memory_retriever
         logger.info(f"Memory retriever initialized.")
 
+        # Extended memory retriever: warm-buffer write path + ground-truth validation
+        extended_memory_retriever = ExtendedMemoryInterface(
+            main_db_engine=app.state.main_db_engine,
+            embedding_client=gemini_text_embedding_client,
+            redis_client=redis_client,
+            cross_encoder_reranker=cross_encoder_reranker,
+        )
+        extended_memory_retriever.start_periodic_flush(_WARM_BUFFER_FLUSH_INTERVAL_SECONDS)
+        app.state.extended_memory_retriever = extended_memory_retriever
+        logger.info(
+            f"Extended memory retriever initialized "
+            f"(flush interval={_WARM_BUFFER_FLUSH_INTERVAL_SECONDS}s)."
+        )
+
         try:
             # lets FastAPI process requests during yield
             yield
@@ -74,6 +92,7 @@ async def lifespan(app: FastAPI):
             # explicit resource clean up, otherwise automatically cleaned via exit stack
             logger.info("Shutting down service resources...")
             # TODO: add any explicit cleanup / shutdown code here
+            await extended_memory_retriever.stop_periodic_flush()
 
         # The AsyncExitStack will automatically call the __aexit__ or registered cleanup
         # methods for all resources entered or pushed to it, in reverse order.
