@@ -32,11 +32,16 @@ PROGRESS:
 - optimizations via LRU and deque (max cache size)
 3. Turning this into a minimal fastAPI service for easier testing across session, easier debugging
 - also implementing time logging to verify the effectiveness of cache
-
--- TO BE DONE
 4. Utilizing redis to keep persistant cache across session, can reset via test routes
 5. Implementing reranker w/ CE model
-6. Rache cache client, TBD
+6. Added rerank, with optional param w/ dynamic threshold for limit and retrieval_sizes
+7. Managing cache to be upward compatible
+8. Optimizations:
+- best semantic result, not the first
+- unexpected bug when db doesn't have enough documents, so requested fetch size > document size, then we don't hit cached results
+
+-- TO BE DONE
+9. Rache cache client, TBD
 
 ## Real-scenario memory latency testing concerns:
 - Can mock embed a bunch of random floats and load db with ~1-100M vectors
