@@ -18,6 +18,7 @@ from core.logging_middleware import LoggingMiddleware
 
 # API / routes
 from api.test_routes import router as test_router
+from api.managed_db_test_routes import router as managed_db_test_router
 
 # allow docs for testing
 docs_config: dict[str, Any] = {
@@ -49,6 +50,7 @@ app.add_middleware(LoggingMiddleware)
 
 # test routes
 app.include_router(test_router)
+app.include_router(managed_db_test_router)
 
 # test endpoint
 @app.get("/", tags=["Application"])
