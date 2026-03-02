@@ -18,4 +18,13 @@ class VectorDB(MainDB_Base):
     vector = Column(Vector(1536), nullable=False)
     text = Column(Text, nullable=False)
 
-    # TODO: define index if needed based on testing
+    # index for faster similarity search, NOTE: only on cosine similarity for now
+    __table_args__ = (
+        Index(
+            "ix_vector_db_hnsw",
+            "vector",
+            postgresql_using="hnsw",
+            postgresql_with={"m": 16, "ef_construction": 64},
+            postgresql_ops={"vector": "vector_cosine_ops"},
+        ),
+    )
