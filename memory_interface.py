@@ -93,17 +93,18 @@ class MemoryInterface:
         return best_results
 
     # main retrieval methods
+    # two separate retrieval methods for rerank vs not
     async def retrieve(self, query: str, limit: int = 5) -> list[str]:
         """
-        placeholder.
-        """
-        return [""]
-
-    # two separate retrieval methods for rerank vs not
-    async def retrieve_plain(self, query: str, limit: int = 5) -> list[str]:
-        """
-        Baseline retrieval without reranking. Returns top-k results from the vector DB.
-        Uses the full 3-tier cache (L1 -> L2 -> L3 -> DB).
+        Baseline retrieval without reranking. 
+        Embeds the natural language query and returns the top-k most similar texts from the DB.
+    
+        Cache hierarchy:
+            L1: in-memory LRU (OrderedDict) — fastest, ephemeral
+            L2: Redis — persistent across restarts (cache promotion should be both L1 and L2, since redis persists)
+            L3: semantic cache (deque) - skips DB if a similar query was seen, ephemeral
+            fallback: vector DB query
+        NOTE: separate cache exists for reranked results
         NOTE: task_type is set to RETRIEVAL_QUERY since gemini embeddings prefer diff content types for diff tasks.
         """
         cache_key = self._make_cache_key(query, "plain")
