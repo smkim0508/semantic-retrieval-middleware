@@ -43,6 +43,13 @@ PROGRESS:
 -- TO BE DONE
 9. Rache cache client, TBD
 
+## Remaining Concerns
+If Vector DB updates between retrievals, the cache can become stale
+- Also the logic for checking whether truly exhausted or small db become stale too
+-> Can resolve with indexing cache by timestamp + searching over a small region of DB and merging results.
+- Not actually implemented, this is a much more sophisticated system and explores a separate concept.
+- Also can use TTL for L2 staleness (somewhat resolves)
+
 ## Real-scenario memory latency testing concerns:
 - Can mock embed a bunch of random floats and load db with ~1-100M vectors
 - The issue is free tiers for supabase / milvus doesn't support this...
