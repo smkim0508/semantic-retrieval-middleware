@@ -92,6 +92,7 @@ async def lifespan(app: FastAPI):
             # explicit resource clean up, otherwise automatically cleaned via exit stack
             logger.info("Shutting down service resources...")
             # TODO: add any explicit cleanup / shutdown code here
+            await extended_memory_retriever.flush_warm_buffer() # flushes to managed vector db before shutdown to avoid data loss, keeps ground truth in sync
             await extended_memory_retriever.stop_periodic_flush()
 
         # The AsyncExitStack will automatically call the __aexit__ or registered cleanup
