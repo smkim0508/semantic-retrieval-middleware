@@ -138,9 +138,9 @@ async def test_store_warm(
 ):
     """
     Stores text via the warm-buffer path:
-      1. Immediately writes a ground_truth row (is_synced=False).
-      2. Embeds the text and holds it in the in-memory warm buffer.
-      3. Auto-flushes if the buffer reaches the flush threshold.
+    1. Immediately writes a ground_truth row (is_synced=False).
+    2. Embeds the text and holds it in the in-memory warm buffer.
+    3. Auto-flushes if the buffer reaches the flush threshold.
     Returns the assigned ground_truth_id and current buffer size.
     """
     logger.info(f"[test/store-warm] text='{body.text}'")
@@ -164,10 +164,10 @@ async def test_flush_warm(
 ):
     """
     Manually triggers a warm-buffer flush:
-      - Deletes stale VectorDB rows for updated items.
-      - Bulk-inserts new VectorDB rows.
-      - Marks ground_truth rows as is_synced=True.
-      - Clears the in-memory buffer.
+        - Deletes stale VectorDB rows for updated items.
+        - Bulk-inserts new VectorDB rows.
+        - Marks ground_truth rows as is_synced=True.
+        - Clears the in-memory buffer.
     """
     logger.info("[test/flush-warm] manual flush triggered")
 
