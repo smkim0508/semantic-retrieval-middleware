@@ -31,21 +31,40 @@ class GroundTruth(MainDB_Base):
 class VectorDB(MainDB_Base):
     """
     Simple vector db table, used to experiment with semantic retrieval.
-
-    ground_truth_id: nullable FK to ground_truth.id.
-      - NULL -> legacy item stored via the old direct path; always treated as valid.
-      - NOT NULL -> stored via warm buffer path; valid only when ground_truth.is_synced=True.
+    Legacy direct-store path — no ground-truth tracking.
     """
     __tablename__ = "vector_db"
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     vector = Column(Vector(1536), nullable=False)
     text = Column(Text, nullable=False)
-    ground_truth_id = Column(Integer, ForeignKey("ground_truth.id"), nullable=True, index=True)
 
     # index for faster similarity search, NOTE: only on cosine similarity for now
     __table_args__ = (
         Index(
             "ix_vector_db_hnsw",
+            "vector",
+            postgresql_using="hnsw",
+            postgresql_with={"m": 16, "ef_construction": 64},
+            postgresql_ops={"vector": "vector_cosine_ops"},
+        ),
+    )
+
+class VectorDBManaged(MainDB_Base):
+    """
+    Managed vector DB table for the warm-buffer write path.
+    Every row is linked to a GroundTruth row via non-nullable ground_truth_id.
+    Valid only after the corresponding GroundTruth row has is_synced=True (set on flush).
+    """
+    __tablename__ = "vector_db_managed"
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    vector = Column(Vector(1536), nullable=False)
+    text = Column(Text, nullable=False)
+    ground_truth_id = Column(Integer, ForeignKey("ground_truth.id"), nullable=False, index=True)
+
+    # index for faster similarity search, NOTE: only on cosine similarity for now
+    __table_args__ = (
+        Index(
+            "ix_vector_db_managed_hnsw",
             "vector",
             postgresql_using="hnsw",
             postgresql_with={"m": 16, "ef_construction": 64},
