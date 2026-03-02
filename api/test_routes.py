@@ -1,5 +1,6 @@
 # test routes
 import json
+import time
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -28,13 +29,15 @@ async def test_retrieve(
 ):
     logger.info(f"[test/retrieve] query='{query}', limit={limit}")
 
-    async with async_timer("memory.retrieve"):
-        results = await memory.retrieve(query=query, limit=limit)
+    start = time.perf_counter()
+    results = await memory.retrieve(query=query, limit=limit)
+    elapsed_ms = (time.perf_counter() - start) * 1000
 
     return {
         "query": query,
         "results": results,
         "count": len(results),
+        "elapsed_ms": round(elapsed_ms, 2),
     }
 
 @router.post("/embed-and-store")
@@ -85,6 +88,26 @@ async def get_redis_cache(
     logger.info(f"Returning {len(entries)} cached entries")
     return {"count": len(entries), "entries": entries}
 
+@router.get("/retrieve-reranked")
+async def test_retrieve_reranked(
+    query: str = Query(description="Text query to retrieve and rerank semantically similar results"),
+    limit: int = 5,
+    retrieval_size: int = 50,
+    memory: MemoryInterface = Depends(get_memory_retriever),
+):
+    logger.info(f"[test/retrieve-reranked] query='{query}', limit={limit}, retrieval_size={retrieval_size}")
+
+    start = time.perf_counter()
+    results = await memory.retrieve_and_rerank(query=query, limit=limit, retrieval_size=retrieval_size)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+
+    return {
+        "query": query,
+        "results": results,
+        "count": len(results),
+        "elapsed_ms": round(elapsed_ms, 2),
+    }
+
 @router.post("/clear-cache")
 async def clear_cache(
     redis_client: aioredis.Redis = Depends(get_redis_client),
@@ -99,6 +122,7 @@ async def clear_cache(
     await redis_client.flushdb()
     memory._exact_cache.clear()
     memory._semantic_cache.clear()
+    memory._cache_fetch_sizes.clear()
     logger.info("All cache layers cleared")
     return {"message": "All cache layers cleared"}
 
