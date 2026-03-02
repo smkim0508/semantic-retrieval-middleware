@@ -33,6 +33,8 @@ async def test_retrieve(
     results = await memory.retrieve(query=query, limit=limit)
     elapsed_ms = (time.perf_counter() - start) * 1000
 
+    logger.info(f"total elapsed time: {round(elapsed_ms, 2)}")
+
     return {
         "query": query,
         "results": results,
@@ -100,6 +102,8 @@ async def test_retrieve_reranked(
     start = time.perf_counter()
     results = await memory.retrieve_and_rerank(query=query, limit=limit, retrieval_size=retrieval_size)
     elapsed_ms = (time.perf_counter() - start) * 1000
+
+    logger.info(f"total elapsed time: {round(elapsed_ms, 2)}")
 
     return {
         "query": query,

@@ -9,6 +9,7 @@ from models.reranker.cross_encoder import CEReranker
 from db.crud import find_similar
 from typing import Optional
 from common.logger import logger
+from common.timer import async_timer
 
 class MemoryInterface:
     """
@@ -181,7 +182,8 @@ class MemoryInterface:
                 return cached_results[:limit]
 
         # 2) L2 Redis — if enough cached results (upward compatibility) OR DB was exhausted at the requested size
-        cached = await self.redis_client.get(cache_key)
+        async with async_timer("redis_get"):
+            cached = await self.redis_client.get(cache_key)
         if cached:
             data = json.loads(cached)
             # parses the data from redis
@@ -193,7 +195,8 @@ class MemoryInterface:
                 return results[:limit]
 
         # otherwise, embed the query
-        embeddings = self.embedding_client.embed_text([query], task_type="RETRIEVAL_QUERY")
+        async with async_timer("embed_text"):
+            embeddings = self.embedding_client.embed_text([query], task_type="RETRIEVAL_QUERY")
         if not embeddings:
             return []
         query_vector = embeddings[0]
@@ -202,15 +205,18 @@ class MemoryInterface:
         semantic_cache_result = self._find_semantic_cache_hit(query_vector, rerank=True, size_needed=retrieval_size)
         if semantic_cache_result:
             logger.info(f"[L3 cache] semantic hit: {query}")
-            reranked = self._rerank(query, semantic_cache_result)
+            async with async_timer("rerank"):
+                reranked = self._rerank(query, semantic_cache_result)
             self._set_exact_cache(cache_key, reranked, fetch_rs=retrieval_size)
             await self.redis_client.set(cache_key, json.dumps({"results": reranked, "fetch_rs": retrieval_size}))
             return reranked[:limit]
 
         # 4) cache miss — retrieve from db, rerank, populate all caches
         logger.info(f"no cache hit, retrieving from db: {query}")
-        results = await find_similar(query_vector=query_vector, engine=self.main_db_engine, limit=retrieval_size)
-        reranked = self._rerank(query, results)
+        async with async_timer("find_similar"):
+            results = await find_similar(query_vector=query_vector, engine=self.main_db_engine, limit=retrieval_size)
+        async with async_timer("rerank"):
+            reranked = self._rerank(query, results)
         # NOTE: stores all reranked results to caches.
         self._set_exact_cache(cache_key, reranked, fetch_rs=retrieval_size)
         self._semantic_cache.append((query_vector, reranked, True, retrieval_size))
