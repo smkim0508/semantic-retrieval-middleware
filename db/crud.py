@@ -1,5 +1,5 @@
 # CRUD operations on the vector db
-from db.model import VectorDB, GroundTruth
+from db.model import VectorDB, VectorDBManaged, GroundTruth
 from db.session import get_async_session_maker
 
 from sqlalchemy import select, delete, update
@@ -21,16 +21,16 @@ async def find_similar_extended(
     query_vector: list[float], engine: AsyncEngine, limit: int, offset: int = 0
 ) -> list[dict]:
     """
-    Like find_similar but returns dicts with {id, text, ground_truth_id} for each result.
+    Queries VectorDBManaged and returns dicts with {id, text, ground_truth_id} for each result.
     Used internally by the warm-buffer retrieval path for ground-truth validation.
     offset: skip this many top results (for top-up queries after the first pass).
-    
+
     NOTE: for warm buffer retrieval
     """
     async with get_async_session_maker(engine)() as session:
         result = await session.execute(
-            select(VectorDB.id, VectorDB.text, VectorDB.ground_truth_id)
-            .order_by(VectorDB.vector.cosine_distance(query_vector))
+            select(VectorDBManaged.id, VectorDBManaged.text, VectorDBManaged.ground_truth_id)
+            .order_by(VectorDBManaged.vector.cosine_distance(query_vector))
             .limit(limit)
             .offset(offset)
         )
@@ -85,9 +85,9 @@ async def get_ground_truth_sync_status(ids: list[int], engine: AsyncEngine) -> d
 async def flush_warm_entries(entries: list[dict], engine: AsyncEngine) -> int:
     """
     Atomically flushes warm-buffer entries into the vector DB:
-      1. Delete any existing VectorDB rows with the same ground_truth_id (stale entries from updates).
-      2. Bulk-insert new VectorDB rows with ground_truth_id set.
-      3. Mark the corresponding GroundTruth rows as is_synced=True.
+    1. Delete any existing VectorDB rows with the same ground_truth_id (stale entries from updates).
+    2. Bulk-insert new VectorDB rows with ground_truth_id set.
+    3. Mark the corresponding GroundTruth rows as is_synced=True.
     Returns the number of entries flushed.
 
     NOTE: for warm buffer retrieval
@@ -98,14 +98,14 @@ async def flush_warm_entries(entries: list[dict], engine: AsyncEngine) -> int:
     gt_ids = [e["ground_truth_id"] for e in entries]
 
     async with get_async_session_maker(engine)() as session:
-        # 1. Remove stale VectorDB rows for these ground_truth_ids (handles update case)
+        # 1. Remove stale VectorDBManaged rows for these ground_truth_ids (handles update case)
         await session.execute(
-            delete(VectorDB).where(VectorDB.ground_truth_id.in_(gt_ids))
+            delete(VectorDBManaged).where(VectorDBManaged.ground_truth_id.in_(gt_ids))
         )
 
-        # 2. Insert fresh VectorDB rows
+        # 2. Insert fresh VectorDBManaged rows
         new_rows = [
-            VectorDB(vector=e["vector"], text=e["text"], ground_truth_id=e["ground_truth_id"])
+            VectorDBManaged(vector=e["vector"], text=e["text"], ground_truth_id=e["ground_truth_id"])
             for e in entries
         ]
         session.add_all(new_rows)
