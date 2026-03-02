@@ -43,13 +43,6 @@ PROGRESS:
 -- TO BE DONE
 9. Rache cache client, TBD
 
-## Remaining Concerns
-If Vector DB updates between retrievals, the cache can become stale
-- Also the logic for checking whether truly exhausted or small db become stale too
--> Can resolve with indexing cache by timestamp + searching over a small region of DB and merging results.
-- Not actually implemented, this is a much more sophisticated system and explores a separate concept.
-- Also can use TTL for L2 staleness (somewhat resolves)
-
 ## Real-scenario memory latency testing concerns:
 - Can mock embed a bunch of random floats and load db with ~1-100M vectors
 - The issue is free tiers for supabase / milvus doesn't support this...
@@ -58,5 +51,21 @@ If Vector DB updates between retrievals, the cache can become stale
 - Growth in query latency is ~O(logn), so increasing index size isn't too big of a deal for query latency. Network latency costs more often.
 - Verify PoC using just the baseline vs cache design
 
-TBD:
-- Real-scenario latency reduction can be achieved further via eager async calls.
+## Other Remaining Concerns
+If Vector DB updates between retrievals, the cache can become stale
+- Also the logic for checking whether truly exhausted or small db become stale too
+-> Can resolve with indexing cache by timestamp + searching over a small region of DB and merging results.
+- Not actually implemented, this is a much more sophisticated system and explores a separate concept.
+- Also can use TTL for L2 staleness (somewhat resolves)
+
+----
+
+## Making Updates + Retrieval Freshness-aware (Managed Vector DB)
+- Minimal PoC implemented with warm buffer that holds new updates (not yet flushed to managed vector db) + ground truth structured DB that is synced with any updates immediately
+- Periodically flushes warm buffer to vector db
+- If warm buffer is non-empty, then check buffer + db, compare with ground truth for validation
+- Otherwise (in sync), take the usual 3-tiered cache hierarchy for reduced retrieval latency.
+
+## Additional Future Considerations
+- Real-scenario latency reduction can be achieved further via eager async calls (vector retrieval async call in background, and scan cache meanwhile).
+- Freshness-aware managed vector db can be optimized further by making warm cache store ground truth pointers and cross-check w/ caches even when non-empty.
