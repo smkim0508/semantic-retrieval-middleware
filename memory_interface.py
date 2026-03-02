@@ -21,12 +21,9 @@ class MemoryInterface:
     - semantic cache deque stores (vector, results, reranked_bool) tuples
         - reranked_bool prevents cross-contamination between plain and reranked entries
         - len(results) encodes the candidate pool size (retrieval_size for reranked, limit for plain)
-    - L1/L2 cache keys include retrieval_size for retrieve_and_rerank to isolate from retrieve_plain
-
-    if retrieval_size and limit was fixed, this would be easier
-    
-    more bugs:
-    1) L1/L2 caches are not upward compatible
+    - L1/L2 cache keys are namespaced: plain::{query} and reranked::{query}
+        - upward compatible: len(cached) >= size_needed check allows larger cached entries to serve smaller requests
+        - on miss due to insufficient size, DB re-fetch overwrites the entry with the larger result set
     """
 
     def __init__(self, embedding_client: GenAITextEmbeddingClient, main_db_engine: AsyncEngine, redis_client: aioredis.Redis, cross_encoder_reranker: CEReranker):
@@ -42,14 +39,14 @@ class MemoryInterface:
         self._exact_cache_max = 50 # threshold for max number of items in exact query cache
     
     # utils for caches below
-    def _make_cache_key(self, query: str, limit: int, retrieval_size: Optional[int] = None) -> str:
+    def _make_cache_key(self, query: str, namespace: str) -> str:
         """
         Simple helper to format the cache key for L1 and L2 caches.
-        retrieval_size is included for retrieve_and_rerank to avoid collisions with retrieve_plain keys.
+        Namespace separates retrieve_plain ("plain") from retrieve_and_rerank ("reranked").
+        Neither limit nor retrieval_size is included — the len(cached) >= size_needed check at
+        read time makes entries upward-compatible across different limit/retrieval_size values.
         """
-        if retrieval_size is not None:
-            return f"{query}::{limit}::{retrieval_size}"
-        return f"{query}::{limit}"
+        return f"{namespace}::{query}"
 
     def _set_exact_cache(self, key: str, value: list[str]) -> None:
         """
@@ -96,68 +93,12 @@ class MemoryInterface:
         return best_results
 
     # main retrieval methods
-    async def retrieve(self, query: str, limit: int = 5, rerank: bool = True) -> list[str]:
+    async def retrieve(self, query: str, limit: int = 5) -> list[str]:
         """
-        Embeds the natural language query and returns the top-k most similar texts from the db.
-        Cache hierarchy:
-            L1: in-memory LRU (OrderedDict) — fastest, ephemeral
-            L2: Redis — persistent across restarts (cache promotion should be both L1 and L2, since redis persists)
-            L3: semantic cache (deque) - skips DB if a similar query was seen, ephemeral
-            fallback: vector DB query
-            NOTE: caches hold reranked results.
-
-        This retrieval method also (optionally) reranks the results using a cross-encoder reranker before returning.
-        - NOTE: one caveat, initial retrieval only fetches top k requested results (limit) and reranks.
-        - This is not necessarily the top k most similar texts post-reranking from the entire DB.
-
-        NOTE: task_type is set to RETRIEVAL_QUERY since gemini embeddings prefer diff content types for diff tasks.
+        placeholder.
         """
-        cache_key = self._make_cache_key(query, limit)
+        return [""]
 
-        # 1) L1 exact match — skip embedding entirely
-        if cache_key in self._exact_cache:
-            logger.info(f"[L1 cache] exact hit: {query}")
-            self._exact_cache.move_to_end(cache_key)
-            return self._exact_cache[cache_key]
-
-        # 2) L2 Redis exact match — persistent across restarts, still skips embedding
-        cached = await self.redis_client.get(cache_key)
-        if cached:
-            logger.info(f"[L2 cache] Redis hit: {query}")
-            results = json.loads(cached)
-            self._set_exact_cache(cache_key, results) # promote to L1
-            return results
-
-        # otherwise, embed the query
-        embeddings = self.embedding_client.embed_text([query], task_type="RETRIEVAL_QUERY")
-        if not embeddings:
-            return []
-        query_vector = embeddings[0]
-
-        # 3) semantic cache — skip db retrieval if similar query was seen before
-        # NOTE: current helper loops through all the cached vectors, but it is possible to implement this via numpy matrix multiplication to one-shot all cosine similarities
-        # - above optimization not yet implemented since cache size is negligibly small (most case) and may be beneficial if recent cache computed first and returns
-        semantic_cache_result = self._find_semantic_cache_hit(query_vector, rerank=rerank, size_needed=limit)
-        if semantic_cache_result:
-            logger.info(f"[L3 cache] semantic hit: {query}")
-            # NOTE: for semantic cache only, we re-rank again on the exact query, since cached results are reranked on a different query.
-            semantic_cache_result = self._rerank(query, semantic_cache_result) if rerank else semantic_cache_result
-            # promote to both exact caches so future identical queries skip embedding
-            self._set_exact_cache(cache_key, semantic_cache_result)
-            await self.redis_client.set(cache_key, json.dumps(semantic_cache_result))
-            return semantic_cache_result
-
-        # 4) cache miss — retrieve from db and populate all caches
-        logger.info(f"no cache hit, retrieving from db: {query}")
-        results = await find_similar(query_vector=query_vector, engine=self.main_db_engine, limit=limit)
-        # rerank results via cross-encoder and save them to caches
-        results = self._rerank(query, results) if rerank else results
-        logger.info(f"saving retrieved results to cache for {query}")
-        self._set_exact_cache(cache_key, results)
-        self._semantic_cache.append((query_vector, results, rerank))
-        await self.redis_client.set(cache_key, json.dumps(results))
-        return results
-    
     # two separate retrieval methods for rerank vs not
     async def retrieve_plain(self, query: str, limit: int = 5) -> list[str]:
         """
@@ -165,21 +106,24 @@ class MemoryInterface:
         Uses the full 3-tier cache (L1 -> L2 -> L3 -> DB).
         NOTE: task_type is set to RETRIEVAL_QUERY since gemini embeddings prefer diff content types for diff tasks.
         """
-        cache_key = self._make_cache_key(query, limit)
+        cache_key = self._make_cache_key(query, "plain")
 
-        # 1) L1 exact match — skip embedding entirely
+        # 1) L1 — upward compatible: serve if cached has enough results
         if cache_key in self._exact_cache:
-            logger.info(f"[L1 cache] exact hit: {query}")
-            self._exact_cache.move_to_end(cache_key)
-            return self._exact_cache[cache_key]
+            cached_results = self._exact_cache[cache_key]
+            if len(cached_results) >= limit:
+                logger.info(f"[L1 cache] exact hit: {query}")
+                self._exact_cache.move_to_end(cache_key)
+                return cached_results[:limit]
 
-        # 2) L2 Redis exact match — persistent across restarts, still skips embedding
+        # 2) L2 Redis — upward compatible: serve if cached has enough results
         cached = await self.redis_client.get(cache_key)
         if cached:
-            logger.info(f"[L2 cache] Redis hit: {query}")
             results = json.loads(cached)
-            self._set_exact_cache(cache_key, results)
-            return results
+            if len(results) >= limit:
+                logger.info(f"[L2 cache] Redis hit: {query}")
+                self._set_exact_cache(cache_key, results)
+                return results[:limit]
 
         # otherwise, embed the query
         embeddings = self.embedding_client.embed_text([query], task_type="RETRIEVAL_QUERY")
@@ -211,21 +155,25 @@ class MemoryInterface:
         NOTE: task_type is set to RETRIEVAL_QUERY since gemini embeddings prefer diff content types for diff tasks.
         """
         assert retrieval_size >= limit, f"retrieval_size ({retrieval_size}) must be >= limit ({limit})"
-        cache_key = self._make_cache_key(query, limit, retrieval_size)
+        cache_key = self._make_cache_key(query, "reranked")
 
-        # 1) L1 exact match — skip embedding entirely
+        # 1) L1 — upward compatible: serve if cached has enough candidates to satisfy retrieval_size
         if cache_key in self._exact_cache:
-            logger.info(f"[L1 cache] exact hit: {query}")
-            self._exact_cache.move_to_end(cache_key)
-            return self._exact_cache[cache_key][:limit]
+            cached_results = self._exact_cache[cache_key]
+            if len(cached_results) >= retrieval_size:
+                logger.info(f"[L1 cache] exact hit: {query}")
+                # NOTE: update LRU if there's a cache hit, as long as size is sufficiently large
+                self._exact_cache.move_to_end(cache_key)
+                return cached_results[:limit]
 
-        # 2) L2 Redis exact match — persistent across restarts, still skips embedding
+        # 2) L2 Redis — upward compatible: serve if cached has enough candidates to satisfy retrieval_size
         cached = await self.redis_client.get(cache_key)
         if cached:
-            logger.info(f"[L2 cache] Redis hit: {query}")
             results = json.loads(cached)
-            self._set_exact_cache(cache_key, results)
-            return results[:limit]
+            if len(results) >= retrieval_size:
+                logger.info(f"[L2 cache] Redis hit: {query}")
+                self._set_exact_cache(cache_key, results)
+                return results[:limit]
 
         # otherwise, embed the query
         embeddings = self.embedding_client.embed_text([query], task_type="RETRIEVAL_QUERY")
