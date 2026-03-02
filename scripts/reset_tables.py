@@ -2,8 +2,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import time
 # import all tables here
-from db.model import VectorDB
 from db.model import MainDB_Base
+from db.model import VectorDB
+from db.model import GroundTruth
 
 from dotenv import load_dotenv
 import os
