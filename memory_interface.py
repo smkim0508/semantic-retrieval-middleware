@@ -18,12 +18,16 @@ class MemoryInterface:
     2. Semantic cache — skips db retrieval if a sufficiently similar query was seen before (FIFO deque, max 10)
 
     NOTE:
-    - semantic cache deque stores (vector, results, reranked_bool) tuples
+    - semantic cache deque stores (vector, results, reranked_bool, fetch_rs) tuples
         - reranked_bool prevents cross-contamination between plain and reranked entries
-        - len(results) encodes the candidate pool size (retrieval_size for reranked, limit for plain)
+        - fetch_rs is the retrieval_size/limit used in the DB fetch (for DB exhaustion detection, same logic as L1/L2)
     - L1/L2 cache keys are namespaced: plain::{query} and reranked::{query}
         - upward compatible: len(cached) >= size_needed check allows larger cached entries to serve smaller requests
         - on miss due to insufficient size, DB re-fetch overwrites the entry with the larger result set
+    (Edge case for small retrieval documents size):
+    - _cache_fetch_sizes maps cache_key -> retrieval_size used in last DB fetch
+        - distinguishes "DB exhausted" (DB had fewer docs than retrieval_size) from "fetched with smaller retrieval_size"
+        - if original_fetch_rs >= retrieval_size and len(cached) < original_fetch_rs, DB was exhausted, then serve from cache
     """
 
     def __init__(self, embedding_client: GenAITextEmbeddingClient, main_db_engine: AsyncEngine, redis_client: aioredis.Redis, cross_encoder_reranker: CEReranker):
@@ -33,9 +37,10 @@ class MemoryInterface:
         self.redis_client = redis_client
         self.cross_encoder_reranker = cross_encoder_reranker
         # caches and cache settings
-        self._exact_cache: OrderedDict[str, list[str]] = OrderedDict()  # L1: in-memory LRU
-        self._semantic_cache: deque[tuple[list[float], list[str], bool]] = deque(maxlen=10) # (query_vector, results, reranked_bool)
-        self._cosine_similarity_threshold = 0.90 # threshold for semantic cache
+        self._exact_cache: OrderedDict[str, list[str]] = OrderedDict() # L1: in-memory LRU
+        self._semantic_cache: deque[tuple[list[float], list[str], bool, int]] = deque(maxlen=10) # (query_vector, results, reranked_bool, fetch_rs)
+        self._cache_fetch_sizes: dict[str, int] = {} # cache_key -> retrieval_size used in last DB fetch (for DB exhaustion detection)
+        self._cosine_similarity_threshold = 0.70 # threshold for semantic cache
         self._exact_cache_max = 50 # threshold for max number of items in exact query cache
     
     # utils for caches below
@@ -48,15 +53,20 @@ class MemoryInterface:
         """
         return f"{namespace}::{query}"
 
-    def _set_exact_cache(self, key: str, value: list[str]) -> None:
+    def _set_exact_cache(self, key: str, value: list[str], fetch_rs: int = 0) -> None:
         """
-        Simple helper to insert or or update elements in LRU exact cache, evicting the oldest entry if at capacity.
+        Insert or update an entry in the LRU exact cache, evicting the oldest entry if at capacity.
+        fetch_rs: if provided, also updates _cache_fetch_sizes[key] for DB exhaustion detection.
+        On eviction, the corresponding _cache_fetch_sizes entry is cleaned up to prevent unbounded growth.
         """
         if key in self._exact_cache:
             self._exact_cache.move_to_end(key)
         self._exact_cache[key] = value
+        if fetch_rs:
+            self._cache_fetch_sizes[key] = fetch_rs
         if len(self._exact_cache) > self._exact_cache_max:
-            self._exact_cache.popitem(last=False) # evict LRU
+            evicted_key, _ = self._exact_cache.popitem(last=False) # evict LRU
+            self._cache_fetch_sizes.pop(evicted_key, None)
 
     def _cosine_similarity(self, a: list[float], b: list[float]) -> float:
         """
@@ -73,7 +83,7 @@ class MemoryInterface:
         """
         Simple helper to loop through semantic cache to find query hit via cos. sim. threshold.
         - rerank: must match the cached entry's reranked_bool to prevent cross-contamination
-        - size_needed: len(cached_results) must be >= size_needed to ensure sufficient candidate pool
+        - size_needed: len(cached_results) must be >= size_needed, or DB must have been exhausted
             - for retrieve_and_rerank: size_needed = retrieval_size
             - for retrieve_plain / retrieve: size_needed = limit
         - returns the cached results if hit, None otherwise
@@ -81,10 +91,11 @@ class MemoryInterface:
         """
         best_results = None
         best_score = -1.0
-        for cached_vector, cached_results, cached_reranked in self._semantic_cache:
+        for cached_vector, cached_results, cached_reranked, cached_fetch_rs in self._semantic_cache:
             if cached_reranked != rerank:
                 continue
-            if len(cached_results) < size_needed:
+            db_exhausted = cached_fetch_rs >= size_needed and len(cached_results) < cached_fetch_rs
+            if len(cached_results) < size_needed and not db_exhausted:
                 continue
             score = self._cosine_similarity(query_vector, cached_vector)
             if score >= self._cosine_similarity_threshold and score > best_score:
@@ -144,7 +155,7 @@ class MemoryInterface:
         logger.info(f"no cache hit, retrieving from db: {query}")
         results = await find_similar(query_vector=query_vector, engine=self.main_db_engine, limit=limit)
         self._set_exact_cache(cache_key, results)
-        self._semantic_cache.append((query_vector, results, False))
+        self._semantic_cache.append((query_vector, results, False, limit))
         await self.redis_client.set(cache_key, json.dumps(results))
         return results
 
@@ -158,22 +169,27 @@ class MemoryInterface:
         assert retrieval_size >= limit, f"retrieval_size ({retrieval_size}) must be >= limit ({limit})"
         cache_key = self._make_cache_key(query, "reranked")
 
-        # 1) L1 — upward compatible: serve if cached has enough candidates to satisfy retrieval_size
+        original_fetch_rs = self._cache_fetch_sizes.get(cache_key, 0)
+
+        # 1) L1 — if enough cached results (upward compatibility) OR DB was exhausted at the requested size
         if cache_key in self._exact_cache:
             cached_results = self._exact_cache[cache_key]
-            if len(cached_results) >= retrieval_size:
+            db_exhausted = original_fetch_rs >= retrieval_size and len(cached_results) < original_fetch_rs
+            if len(cached_results) >= retrieval_size or db_exhausted:
                 logger.info(f"[L1 cache] exact hit: {query}")
-                # NOTE: update LRU if there's a cache hit, as long as size is sufficiently large
                 self._exact_cache.move_to_end(cache_key)
                 return cached_results[:limit]
 
-        # 2) L2 Redis — upward compatible: serve if cached has enough candidates to satisfy retrieval_size
+        # 2) L2 Redis — if enough cached results (upward compatibility) OR DB was exhausted at the requested size
         cached = await self.redis_client.get(cache_key)
         if cached:
-            results = json.loads(cached)
-            if len(results) >= retrieval_size:
+            data = json.loads(cached)
+            # parses the data from redis
+            results, redis_fetch_rs = data["results"], data["fetch_rs"]
+            db_exhausted = redis_fetch_rs >= retrieval_size and len(results) < redis_fetch_rs
+            if len(results) >= retrieval_size or db_exhausted:
                 logger.info(f"[L2 cache] Redis hit: {query}")
-                self._set_exact_cache(cache_key, results)
+                self._set_exact_cache(cache_key, results, fetch_rs=redis_fetch_rs)
                 return results[:limit]
 
         # otherwise, embed the query
@@ -187,8 +203,8 @@ class MemoryInterface:
         if semantic_cache_result:
             logger.info(f"[L3 cache] semantic hit: {query}")
             reranked = self._rerank(query, semantic_cache_result)
-            self._set_exact_cache(cache_key, reranked)
-            await self.redis_client.set(cache_key, json.dumps(reranked))
+            self._set_exact_cache(cache_key, reranked, fetch_rs=retrieval_size)
+            await self.redis_client.set(cache_key, json.dumps({"results": reranked, "fetch_rs": retrieval_size}))
             return reranked[:limit]
 
         # 4) cache miss — retrieve from db, rerank, populate all caches
@@ -196,9 +212,9 @@ class MemoryInterface:
         results = await find_similar(query_vector=query_vector, engine=self.main_db_engine, limit=retrieval_size)
         reranked = self._rerank(query, results)
         # NOTE: stores all reranked results to caches.
-        self._set_exact_cache(cache_key, reranked)
-        self._semantic_cache.append((query_vector, reranked, True))
-        await self.redis_client.set(cache_key, json.dumps(reranked))
+        self._set_exact_cache(cache_key, reranked, fetch_rs=retrieval_size)
+        self._semantic_cache.append((query_vector, reranked, True, retrieval_size))
+        await self.redis_client.set(cache_key, json.dumps({"results": reranked, "fetch_rs": retrieval_size}))
         # returns just the top-k requested
         return reranked[:limit]
 
