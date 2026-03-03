@@ -14,17 +14,12 @@ The API docs will be available at `http://localhost:8000/docs`. Use this to debu
 
 ## Project Notes / Planning
 Necessary components:
+
 0) pre-reqs: methods to embed sample text, define vector DB index/table schema
 1) memory retrieval interface, connected to pgvector (Milvus/Pinecone TBD)
 2) semantic cache
 3) re-ranker
     - w.r.t: cross encoder
-
-TODO:
-- making this a fastAPI service for easier testing and lifespans
-- time logger
-- redis cache for persistance
-- reranker + CE client
 
 PROGRESS:
 1. Baseline pre-reqs + embedding clients, ORMs - using scripts to test them in isolation
