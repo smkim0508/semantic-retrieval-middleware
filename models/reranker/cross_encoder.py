@@ -1,4 +1,6 @@
 # cross encoder reranker built using HuggingFace models
+import contextlib
+import io
 from sentence_transformers import CrossEncoder
 
 class CEReranker():
@@ -8,8 +10,13 @@ class CEReranker():
     """
 
     def __init__(self):
-        # NOTE: main model defintion, can be swapped out
-        self.model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-12-v2")
+        # sentence_transformers prints a tqdm weight-loading bar and a BERT LOAD REPORT directly to stdout on every model load.
+        # Redirect stdout/stderr to suppress this noise
+        # - UNEXPECTED key warning is harmless.
+        
+        # NOTE: main model definition, can be swapped out
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-12-v2")
     
     def rerank(self, pairs: list[tuple[str, str]]) -> list[tuple[float, str]]:
         """

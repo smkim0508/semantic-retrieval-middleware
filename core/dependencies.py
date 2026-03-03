@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from models.embeddings.gemini_embedding_client import GenAITextEmbeddingClient
 from memory_interface import MemoryInterface
 from memory_interface_extended import ExtendedMemoryInterface
+from models.reranker.cross_encoder import CEReranker
 
 # conveniently return any app lifetime dependencies to be used in routes
 def get_main_db_engine(request: Request) -> AsyncEngine:
@@ -32,7 +33,7 @@ def get_redis_client(request: Request) -> aioredis.Redis:
     """
     return request.app.state.redis_client
 
-def get_cross_encoder_reranker(request: Request) -> Any:
+def get_cross_encoder_reranker(request: Request) -> CEReranker:
     """
     FastAPI dependency to get the shared cross encoder reranker from the application state.
     """
